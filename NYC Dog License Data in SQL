@@ -1,0 +1,363 @@
+/* ====================================================================================
+"Exploring New York City Dog Licensing Data"
+	
+Goal: Explore recent trends in dog ownership in NYC.
+	
+Created: April/May 2023
+	
+Skills: SQL, Data Exploration, Data Cleaning, String Functions, Joins, Case Statements, 
+Functions, Views, Temp Tables, Create/Alter Tables, Unions, Stored Procedures, Aliasing
+	
+Datasets (Tables):
+	NYC Dog Licensing Data (Licenses):
+	https://data.cityofnewyork.us/Health/NYC-Dog-Licensing-Dataset/nu7n-tubp
+	AKC Breed Information (AKCBreeds): 
+	https://github.com/tmfilho/akcdata/blob/master/data/akc-data-latest.csv
+	NYC Geographic Data (ZipsBoroughs):
+	https://github.com/erikgregorywebb/nyc-housing/blob/master/Data/nyc-zip-codes.csv
+==================================================================================== */
+
+/* 
+Create a procedure to view the NYC Licensing Table.
+===================================================
+USE NYCDogs
+GO
+CREATE PROCEDURE [View Licenses]
+AS
+SELECT *
+FROM NYCDogs.Licenses;
+*/
+
+EXEC [View Licenses]
+
+/* 
+Create a procedure to view the AKC Table.
+=========================================
+USE NYCDogs
+GO
+CREATE PROCEDURE [View AKC]
+AS
+SELECT *
+FROM NYCDogs.AKCBreeds;
+*/
+
+EXEC [View AKC]
+
+
+/* 
+Create a procedure to view the Zip/Borough Table.
+=================================================
+USE NYCDogs
+GO
+CREATE PROCEDURE [View Zips]
+AS
+SELECT *
+FROM NYCDogs.ZipsBoroughs;
+*/
+
+EXEC [View Zips]
+
+
+
+/* Add a column for YearIssued.
+=============================== 
+ALTER TABLE Licenses ADD YearIssued INT;
+UPDATE Licenses SET YearIssued = YEAR(LicenseIssuedDate);
+*/
+
+
+
+/* Add a column for animal age. 
+============================
+ALTER TABLE Licenses
+ADD AnimalAge INT;
+
+UPDATE Licenses
+SET AnimalAge = (YearIssued - AnimalBirthYear);
+*/
+
+
+
+/* Rename and capitalize the AKC breed name column for consistency.
+===================================================================
+EXEC sp_rename 'AKCBreeds.column1', 'BreedName', 'COLUMN';
+
+UPDATE AKCBreeds
+SET BreedName = UPPER(BreedName);
+*/
+
+
+
+/* Create a procedure to clean varchar columns.
+===============================================
+USE NYCDogs
+GO
+CREATE PROCEDURE clean_column
+    @table_name NVARCHAR(100),
+    @column_name NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @update_sql NVARCHAR(MAX);
+
+    SET @update_sql = 'UPDATE ' + @table_name + ' SET ' + @column_name + ' = LTRIM(RTRIM(' + @column_name + '))';
+    EXECUTE sp_executesql @update_sql;
+	
+	SET @update_sql = 'UPDATE ' + @table_name + 
+	' SET ' + @column_name + ' = UPPER(LEFT(' + @column_name + ', 1)) + LOWER(SUBSTRING(' + @column_name + ', 2, LEN(' + @column_name + ')-1))';
+    EXECUTE sp_executesql @update_sql;
+
+END
+*/
+
+
+
+
+/* Alter the procedure to change to all caps instead of first letter capitalization.
+====================================================================================
+USE NYCDogs
+GO
+CREATE OR ALTER PROCEDURE clean_column
+    @table_name NVARCHAR(100),
+    @column_name NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @update_sql NVARCHAR(MAX);
+
+    SET @update_sql = 'UPDATE ' + @table_name + ' SET ' + @column_name + ' = LTRIM(RTRIM(' + @column_name + '))';
+    EXECUTE sp_executesql @update_sql;
+	
+	SET @update_sql = 'UPDATE ' + @table_name + 
+	' SET ' + @column_name + ' = UPPER(' + @column_name + ')';
+    EXECUTE sp_executesql @update_sql;
+
+END
+*/
+
+
+
+/* Create a temporary table to test the cleaning procedure.
+==========================================================
+DROP TABLE #TempLicensingData
+
+USE NYCDogs;
+CREATE TABLE #TempLicensingData (
+    AnimalName VARCHAR(50),
+	AnimalGender VARCHAR(1),
+	BreedName VARCHAR(50)
+);
+
+INSERT INTO #TempLicensingData (AnimalName)
+VALUES (' Rosie'), ('GREG    ');
+
+INSERT INTO #TempLicensingData (AnimalName, AnimalGender, BreedName)
+SELECT TOP 15 AnimalName, AnimalGender, BreedName
+FROM Licenses;
+
+SELECT *
+FROM #TempLicensingData
+
+EXECUTE clean_column '#TempLicensingData', 'AnimalName';
+EXECUTE clean_column '#TempLicensingData', 'AnimalGender';
+EXECUTE clean_column '#TempLicensingData', 'BreedName';
+
+SELECT 
+	SUM(CASE WHEN #TempLicensingData.BreedName IS NOT NULL then 1 else 0 end)
+FROM 
+	#TempLicensingData
+	INNER JOIN AKCBreeds
+		ON #TempLicensingData.BreedName = AKCBreeds.BreedName;
+*/
+
+
+
+EXEC clean_column 'Licenses', 'AnimalName';
+EXEC clean_column 'Licenses', 'BreedName';
+EXEC clean_column 'Licenses', 'AnimalGender';
+
+
+
+-- Dogs registered per year.
+-- =========================
+SELECT YearIssued, COUNT(*) as DogsRegistered
+FROM Licenses
+WHERE YearIssued > 2014
+GROUP BY YearIssued
+ORDER BY YearIssued;
+
+
+
+/* Find the most popular names by gender for each year.
+=======================================================
+CREATE FUNCTION GetTopAnimalNames(@YearIssued INT, @AnimalGender VARCHAR(1))
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT YearIssued, AnimalGender, AnimalName, Count, Rank
+    FROM (
+        SELECT @YearIssued AS YearIssued, @AnimalGender AS AnimalGender, AnimalName, COUNT(*) AS Count,
+               DENSE_RANK() OVER (PARTITION BY AnimalGender, YearIssued ORDER BY COUNT(*) DESC) AS Rank
+        FROM Licenses
+        WHERE YearIssued = @YearIssued
+            AND AnimalGender = @AnimalGender
+            AND AnimalName != 'UNKNOWN'
+            AND AnimalName != 'NAME NOT PROVIDED'
+        GROUP BY AnimalGender, YearIssued, AnimalName
+        ) AS subquery
+    ORDER BY AnimalGender, YearIssued, Count DESC
+    OFFSET 0 ROWS
+    FETCH NEXT 5 ROWS ONLY
+);
+
+DROP FUNCTION GetTopAnimalNames
+*/
+
+SELECT * FROM GetTopAnimalNames(2021, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2021, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2020, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2020, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2019, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2019, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2018, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2018, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2017, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2017, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2016, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2016, 'F')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2015, 'M')
+UNION ALL
+SELECT * FROM GetTopAnimalNames(2015, 'F');
+	
+
+
+
+-- Make a main view to combine the relevant info from the three tables.
+-- ====================================================================
+CREATE VIEW CompositeView AS
+SELECT
+	YearIssued, 
+	AnimalName, 
+	AnimalGender, 
+	AnimalAge, 
+	Licenses.ZipCode, 
+	Borough, 
+	Licenses.BreedName as Breed,
+	max_weight,
+	grooming_frequency_category,
+	energy_level_value,
+	trainability_value
+FROM
+	Licenses
+	FULL JOIN AKCBreeds
+		ON Licenses.BreedName = AKCBreeds.BreedName
+	JOIN ZipsBoroughs
+		ON Licenses.ZipCode = ZipsBoroughs.ZipCode
+WHERE YearIssued > 2014;
+
+
+
+-- Total # of dogs matching AKC-recognized breeds by year.
+-- =======================================================
+SELECT 
+	YearIssued,
+	SUM(CASE WHEN Breed IS NOT NULL then 1 else 0 end) as AKCBreeds
+FROM 
+	CompositeView
+	INNER JOIN AKCBreeds
+		ON CompositeView.Breed = AKCBreeds.BreedName
+GROUP BY YearIssued
+ORDER BY YearIssued;
+
+
+
+-- Trends in popularity of AKC-recognized breeds.
+-- ==============================================
+SELECT YearIssued, AKCBreeds.BreedName as Breed, COUNT(*) as #
+FROM CompositeView
+INNER JOIN AKCBreeds
+	ON CompositeView.Breed = AKCBreeds.BreedName
+WHERE YearIssued > 2014
+GROUP BY YearIssued, AKCBreeds.BreedName
+ORDER BY YearIssued, COUNT(*) DESC;
+
+
+
+-- Count unknown, mixed, crossed, doodled, and total dogs.
+-- =======================================================
+SELECT 
+	YearIssued as Year,
+	COUNT(CASE WHEN Breed LIKE '%unknown%' THEN 1 END) AS UnknownBreed, 
+	COUNT(CASE WHEN Breed LIKE '%cross%' THEN 1 END) AS CrossBreeds, 
+	COUNT(CASE WHEN Breed LIKE '%mix%' THEN 1 END) AS MixedBreeds,
+	COUNT(CASE WHEN Breed LIKE '%doodle%' THEN 1 END) AS Doodles,
+	COUNT(*) AS TotalDogs
+FROM CompositeView
+GROUP BY YearIssued
+ORDER BY YearIssued;
+
+
+
+-- Popularity of mixed breeds over time.
+-- =====================================
+SELECT YearIssued, COUNT(*) as Mixes
+FROM CompositeView
+WHERE Breed LIKE '%mix%'
+	OR Breed LIKE '%cross%'
+	OR Breed LIKE '%doodle%'
+GROUP BY YearIssued
+ORDER BY YearIssued;
+
+
+
+-- Doodle trend exploration. 
+-- =========================
+SELECT 
+	YearIssued, 
+	COUNT(CASE WHEN Breed LIKE '%doodle%' THEN 1 END) as Doodles,
+	COUNT(*) as TotalDogs
+FROM CompositeView
+GROUP BY YearIssued
+ORDER BY YearIssued;
+
+
+
+-- Trait preferences by borough in 2021.
+-- =====================================
+SELECT
+	YearIssued,
+	Borough,
+	AVG(energy_level_value) as EnergyLevel,
+	AVG(trainability_value) as Trainability,
+	COUNT(CASE WHEN grooming_frequency_category LIKE 'Occasional%' THEN 1 END) as MinGrooming,
+	COUNT(CASE WHEN grooming_frequency_category LIKE 'Weekly%' THEN 1 END) as LowGrooming,
+	COUNT(CASE WHEN grooming_frequency_category LIKE '2-3%' THEN 1 END) as ModerateGrooming,
+	COUNT(CASE WHEN grooming_frequency_category LIKE 'Daily%' THEN 1 END) as HighGrooming,
+	COUNT(CASE WHEN grooming_frequency_category LIKE 'Specialty%' THEN 1 END) as MaxGrooming
+FROM CompositeView
+GROUP BY YearIssued, Borough
+ORDER BY YearIssued, Borough;
+
+
+
+-- Generate a table to export as csv for the next steps in the project.
+-- ====================================================================
+SELECT *
+INTO CompositeTable
+FROM CompositeView
+ORDER BY YearIssued, Borough, Breed, AnimalName;
